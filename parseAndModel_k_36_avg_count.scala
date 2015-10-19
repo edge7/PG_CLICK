@@ -27,33 +27,43 @@ keywordEnabled.cache
 /*  keywordEnabledCount --> Map( keyword --> count, ... ) */
 val keywordEnabledCount = keywordEnabled.countByValue()
 
-/* keywordEnabledK --> Tuple( keyword, K_Label ) */
-val keywordEnabledK = keywordEnabledCount.map ( x => (x._1, kModel.predict(Vectors.dense(x._2) ) ))
+val keywordEnabled_QI = rawData.filter( x=> x.split(";")(5).equals("enabled") ).map( x => ( x.split(";")(3).toLowerCase.replace(" ", ""), x.split(";")(15).toDouble ) )
+keywordEnabled_QI.cache 
+
+val keywordEnabled_QI_groupBy = keywordEnabled_QI.groupBy(_._1)
+val table = keywordEnabled_QI_groupBy.map( x=> (x._1, x._2.map( y => y._2) ))
+
+/* keywordEnabledK --> Tuple( keyword, mean ) */
+val keywordEnabledMean = table.map( x => ( x._1, x._2.reduce(_+_) / x._2.size ) ).collect.toMap
+val mixed = keywordEnabledCount.toSeq.sortBy(_._1).zip( keywordEnabledMean.toSeq.sortBy(_._1))
+val key_count_qi = mixed.map( x=>  ( x._1._1, kModel.predict( Vectors.dense(Array(x._1._2, x._2._2)) ) ) ).toMap
+
+
 
 /* check #K with 0 count  */
 val defaultK = kModel.predict(Vectors.dense(0, 0))  
 
 /* We get Account, id_cliente, Keyword ItSelf, K of the KeyWord */
-val keyWordTable = rawData.filter(x => x.split(";")(5).equals("enabled") ).map( s => ( (s.split(";")(0) + "_" + s.split(";")(1)), ( s.split(";")(3), keywordEnabledK.getOrElse(s.split(";")(3).replace(" ", ""), defaultK) ))).groupBy(_._1)
+val keyWordTable = rawData.filter(x => x.split(";")(5).equals("enabled") ).map( s => ( (s.split(";")(0) + "_" + s.split(";")(1)), ( s.split(";")(3), key_count_qi.getOrElse(s.split(";")(3).replace(" ", ""), defaultK) ))).groupBy(_._1)
 
-val keyWordTableMod = keyWordTable.map( x=> (x._1, x._2.map( y => y._2._2 ))).map( x=> ((x._1),( x._2.count( y => y == 0), x._2.count( y => y == 1), x._2.count( y => y == 2), x._2.count( y => y == 3), x._2.count( y => y == 4), x._2.count( y => y == 5),
-x._2.count( y => y == 6), x._2.count( y => y == 7), x._2.count( y => y == 8),x._2.count( y => y == 9), x._2.count( y => y == 10), x._2.count( y => y == 11),
-x._2.count( y => y == 12), x._2.count( y => y == 13), x._2.count( y => y == 14),x._2.count( y => y == 15), x._2.count( y => y == 16), x._2.count( y => y == 17),
-x._2.count( y => y == 18), x._2.count( y => y == 19), x._2.count( y => y == 20)  )))  
+val keyWordTableMod = keyWordTable.map( x=> (x._1, x._2.map( y => y._2._2 ))).map( x=> ( (x._1), ( x._2.count( y => y == 0) +  "," + x._2.count( y => y == 1)+ "," + x._2.count( y => y == 2)+ "," + x._2.count( y => y == 3)+ "," + x._2.count( y => y == 4)+ "," + x._2.count( y => y == 5) + "," +
+x._2.count( y => y == 6)+ "," + x._2.count( y => y == 7)+ "," + x._2.count( y => y == 8) + "," +x._2.count( y => y == 9)+ "," + x._2.count( y => y == 10)+ "," + x._2.count( y => y == 11) + "," +
+x._2.count( y => y == 12)+ "," + x._2.count( y => y == 13)+ "," + x._2.count( y => y == 14) + "," + x._2.count( y => y == 15)+ "," + x._2.count( y => y == 16)+ "," + x._2.count( y => y == 17) + "," +
+x._2.count( y => y == 18)+ "," + x._2.count( y => y == 19)+ "," + x._2.count( y => y == 20)+ "," + x._2.count( y => y == 21)+ "," + x._2.count( y => y == 22)+ "," + x._2.count( y => y == 23) + "," + 
+x._2.count( y => y == 24)+ "," + x._2.count( y => y == 25)+ "," + x._2.count( y => y == 26)+ "," + x._2.count( y => y == 27)+ "," + x._2.count( y => y == 28)+ "," + x._2.count( y => y == 29) + "," +
+x._2.count( y => y == 30)+ "," + x._2.count( y => y == 31)+ "," + x._2.count( y => y == 32)+ "," + x._2.count( y => y == 33)+ "," + x._2.count( y => y == 34)+ "," + x._2.count( y => y == 35) )) ) 
 /* We just get Account --> 0, idcliente  --> 1, impression --> 3, quotaImpr --> 8, maxCpc --> 12 */
 val generalTable = rawDataGeneral.map( x => ( (x.split(",")(1).replace("-", "") + "_" + x.split(",")(0) ), ( x.split(",")(8).toDouble, x.split(",")(3).toDouble, x.split(",")(12).toDouble) ))
 
 val tableJoint = generalTable.join(keyWordTableMod)
 
-val dataReadyForModel = tableJoint.map( x=> Array.concat(x._2._1.productIterator.toArray, x._2._2.productIterator.toArray)).map( _.map(_.toString.toDouble))
-
+val dataReadyForModel = tableJoint.map( x=> Array.concat(x._2._1.productIterator.toArray.map(_.toString), x._2._2.split(","))).map( x => x.map( y => y.toDouble) )
 /********** Start Training Model   **********/
 
 val dataToTrain = dataReadyForModel.map( x => LabeledPoint( x(0), Vectors.dense(x.tail.map( x=> x) )) )
 
 
 /******************************* LINEAR REGRESSION ***********************************************/
-
 
 // Building the model
 val numIterations = 300
@@ -78,7 +88,7 @@ testData.cache
 // Train a RandomForest model.
 //  Empty categoricalFeaturesInfo indicates all features are continuous.
 
-val categoricalFeaturesInfo = Map[Int, Int]()
+val categoricalFeaturesInfo = Map[Int, Int]( )
 val numTrees = 3 // Use more in practice.
 val featureSubsetStrategy = "auto" // Let the algorithm choose.
 val impurity = "variance"
@@ -99,7 +109,7 @@ yield {
   										  		  (point.label, prediction)
 											}
 	val res = (numTrees, maxDepth, labelsAndPredictions.map{ case(v, p) => math.pow((v - p), 2) }.mean() )	
-	scala.tools.nsc.io.File("res_Keyword").appendAll(res.toString + "\n");
+	scala.tools.nsc.io.File("res_Keyword_count_qi").appendAll(res.toString + "\n");
 	res
 
 }
@@ -111,8 +121,8 @@ println("Learned regression forest model:\n" + model.toDebugString) */
 /***************************** BEST RESULT SO FAR 100, 14, 94.86 *******************************************/
 var index = 0;
 val resModel = 
-for ( numTrees <- Array(100);
-	  maxDepth <- Array(14, 14, 14)   )
+for ( numTrees <- Array(150, 150, 150);
+	  maxDepth <- Array(14, 19)   )
 yield {
 	
 	val model = RandomForest.trainRegressor(trainingData, categoricalFeaturesInfo,
