@@ -1,0 +1,154 @@
+/** Parse and Model  ********************************************************************************/
+/** 	 response:		campaign quota_impression									  				         	                  */
+/**    covariates: 	campaign keyword number for each cluster, campaign impression, campaign max_cpc */
+/****************************************************************************************************/
+
+
+/* libraries */
+import java.io.FileInputStream
+import java.io.ObjectInputStream
+import org.apache.spark.mllib.clustering.KMeans
+import org.apache.spark.mllib.regression.LabeledPoint
+import org.apache.spark.mllib.regression.LinearRegressionModel
+import org.apache.spark.mllib.regression.LinearRegressionWithSGD
+import org.apache.spark.mllib.linalg.Vectors
+import org.apache.spark.mllib.tree.RandomForest
+import org.apache.spark.mllib.tree.model.RandomForestModel
+import org.apache.spark.mllib.util.MLUtils
+
+
+/** Input data ******************************************************************************************************************************************************/
+
+// data are loaded from HDFS
+val rawData = sc.textFile("hdfs://172.31.6.53/user/hdfs/pg_click/*")
+val rawDataGeneral = sc.textFile("hdfs://172.31.6.53/user/hdfs/history/*").filter( x=> ! x.split(",")(0).equals("naccount62229") )
+// naccount62229 is removed because it has an improper value
+
+
+/* Data processing: pg_click table **********************************************************************************************************************************/
+// column 5 defines the keyword state: we only consider the "enabled" labeled keywords
+// keywords are stored in column 3: we impose the lower case format and remove the gaps
+// quota_impression covariate is stored in column 15
+
+// each keyword is liked to its count:
+// keywordEnabledCount --> Tuple(keyword, count)
+val keywordEnabled = rawData.filter( x=> x.split(";")(5).equals("enabled") ).map( x => x.split(";")(3).toLowerCase.replace(" ", "") )
+keywordEnabled.cache
+val keywordEnabledCount = keywordEnabled.countByValue()
+keywordEnabled.unpersist()
+// Print keyword most frequently used
+// keywordEnabledCount.toSeq.sortBy( _._2 ).reverse.foreach(println)
+
+// each keyword is liked to its quota_impression average:
+// keywordEnabledMean --> Tuple(keyword, qi_avg)
+val keywordEnabled_QI = rawData.filter( x=> x.split(";")(5).equals("enabled") ).map( x => ( x.split(";")(3).toLowerCase.replace(" ", ""), x.split(";")(15).toDouble ) )
+keywordEnabled_QI.cache
+val keywordEnabled_QI_groupBy = keywordEnabled_QI.groupBy(_._1)
+val table = keywordEnabled_QI_groupBy.map( x=> ( x._1, x._2.map( y => y._2) ) ) // cleaned keywordEnabled_QI_groupBy
+val keywordEnabledMean = table.map( x => ( x._1, x._2.reduce(_+_) / x._2.size ) ).collect.toMap
+
+// each keyword is liked to its count and its quota_impression average:
+// mixed --> Tuple(keyword, count, qi_avg)
+val mixed = keywordEnabledCount.toSeq.sortBy(_._1).zip( keywordEnabledMean.toSeq.sortBy(_._1))
+
+
+/* Each keyword is labeled via K-Mean model *************************************************************************************************************************/
+// trained model obtained via cluster analysis on keywords: chosen K is 36
+val kModel = sc.objectFile[org.apache.spark.mllib.clustering.KMeansModel]("hdfs://172.31.6.53/user/root/kMeans36New.model").first()
+
+// key_count_qi --> Tuple(keyword, cluster label)
+val key_count_qi = mixed.map( x=>  ( x._1._1, kModel.predict( Vectors.dense(Array(x._1._2, x._2._2)) ) ) ).toMap
+// if one input keyword is not in train dataset then (keyword count=0, quota_impression average=0)
+val defaultK = kModel.predict(Vectors.dense(0, 0))
+
+
+// we link each [account (column 0), id_cliente (column 1)] to the keyword itself (column 3) and the K of the keyWord
+val keyWordTable = rawData.filter(x => x.split(";")(5).equals("enabled") ).map( s => ( (s.split(";")(0) + "_" + s.split(";")(1)),
+  ( s.split(";")(3), key_count_qi.getOrElse(s.split(";")(3).replace(" ", ""), defaultK) ))).groupBy(_._1)
+
+// for each account_id.cliente (i.e. for each campaign) we count the keyword number for each cluster
+val keyWordTableMod = keyWordTable.map( x=> (x._1, x._2.map( y => y._2._2 ))).map( x=> ( (x._1),
+  ( x._2.count(y => y == 0)  + "," + x._2.count(y => y == 1)  + "," + x._2.count(y => y == 2)  + "," + x._2.count(y => y == 3)  + "," +
+    x._2.count(y => y == 4)  + "," + x._2.count(y => y == 5)  + "," + x._2.count(y => y == 6)  + "," + x._2.count(y => y == 7)  + "," +
+    x._2.count(y => y == 8)  + "," + x._2.count(y => y == 9)  + "," + x._2.count(y => y == 10) + "," + x._2.count(y => y == 11) + "," +
+    x._2.count(y => y == 12) + "," + x._2.count(y => y == 13) + "," + x._2.count(y => y == 14) + "," + x._2.count(y => y == 15) + "," +
+    x._2.count(y => y == 16) + "," + x._2.count(y => y == 17) + "," + x._2.count(y => y == 18) + "," + x._2.count(y => y == 19) + "," +
+    x._2.count(y => y == 20) + "," + x._2.count(y => y == 21) + "," + x._2.count(y => y == 22) + "," + x._2.count(y => y == 23) + "," +
+    x._2.count(y => y == 24) + "," + x._2.count(y => y == 25) + "," + x._2.count(y => y == 26) + "," + x._2.count(y => y == 27) + "," +
+    x._2.count(y => y == 28) + "," + x._2.count(y => y == 29) + "," + x._2.count(y => y == 30) + "," + x._2.count(y => y == 31) + "," +
+    x._2.count(y => y == 32) + "," + x._2.count(y => y == 33) + "," + x._2.count(y => y == 34) + "," + x._2.count(y => y == 35) )) )
+
+
+/* Data processing: history table ***********************************************************************************************************************************/
+// we just get [account (column 0), idcliente (column 1)], impression (column 3), quotaImpr (column 8), maxCpc (column 12)
+val generalTable = rawDataGeneral.map( x => ( (x.split(",")(1).replace("-", "") + "_" + x.split(",")(0) ),
+  ( x.split(",")(8).toDouble, x.split(",")(3).toDouble, x.split(",")(12).toDouble) ))
+
+
+
+/** Model training via Random Forest *********************************************************************************************************************************/
+
+/* Final considered dataset: it is the union of the two processed tables */
+val tableJoint = generalTable.join(keyWordTableMod)
+// cleaned final table
+val dataReadyForModel = tableJoint.map( x=> Array.concat(x._2._1.productIterator.toArray.map(_.toString), x._2._2.split(","))).map( x => x.map( y => y.toDouble) )
+
+// data type required by RandomForest methods
+val dataToTrain = dataReadyForModel.map( x => LabeledPoint( x(0), Vectors.dense(x.tail.map( x=> x) )) )
+
+// partition of the data into training set and validation set
+val splits = dataToTrain.randomSplit(Array(0.7, 0.3))
+val (trainingData, testData) = (splits(0), splits(1))
+trainingData.cache
+testData.cache
+
+// algorithm parameters
+val categoricalFeaturesInfo = Map[Int, Int]( ) 	// empty categoricalFeaturesInfo generally indicates all features are continuous:
+// in this case we have categorical features, i.e. the cluster labels,
+// but we do not know the maximum value that they can assume.
+// [ syntax: categoricalFeaturesInfo = Map[Int, Int](key=categorical feature index -> value=maximum value) ]
+val featureSubsetStrategy = "auto" // let the algorithm choose
+val impurity = "variance"
+val maxBins = 1024
+
+// model is trained with different number of tree and different value of tree depth
+val testMSE =
+  for ( numTrees <- (20 to 200 by 70);
+        maxDepth <- (4  to 20  by 5)   )
+    yield {
+
+      val model = RandomForest.trainRegressor(trainingData, categoricalFeaturesInfo, numTrees, featureSubsetStrategy, impurity, maxDepth, maxBins)
+
+      // Evaluate model on test instances and compute test error
+      val labelsAndPredictions = testData.map { point => val prediction = model.predict(point.features)
+        (point.label, prediction)																}
+      val res = (numTrees, maxDepth, labelsAndPredictions.map{ case(v, p) => math.pow((v - p), 2) }.mean() )
+      scala.tools.nsc.io.File("res_Keyword_count_qi").appendAll(res.toString + "\n");
+      res
+
+    }
+
+// once we get the list, we sort it by the goodness measure MSE:
+// we train again the model with numTrees=150, maxDepth={14, 19}
+var index = 0;
+val resModel =
+  for ( numTrees <- Array(150, 150, 150);
+        maxDepth <- Array(14, 19)   )
+    yield {
+
+      val model = RandomForest.trainRegressor(trainingData, categoricalFeaturesInfo, numTrees, featureSubsetStrategy, impurity, maxDepth, maxBins)
+
+      // Evaluate model on test instances and compute test error
+      val labelsAndPredictions = testData.map { point => val prediction = model.predict(point.features)
+        (point.label, prediction)															  }
+      scala.tools.nsc.io.File("LOG_MODEL_TO_DELETE").appendAll(index + "\n");
+      index = index + 1;
+      val res = (model, labelsAndPredictions.map{ case(v, p) => math.pow((v - p), 2) }.mean() )
+      res
+
+    }
+
+/* Finally, let 'model' be model chosen variable name */
+// residuals
+val residuals = testData.map { point => val resid = point.label - model.predict(point.features)
+  (resid, point.label, model.predict(point.features))              }
